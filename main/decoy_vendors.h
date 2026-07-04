@@ -38,6 +38,8 @@ static const vendor_t VENDORS[] = {
     { 0x0087, "vivosmart"   },   // Garmin (band)
     { 0x00E0, NULL          },   // Google (nameless)
     { 0x012D, NULL          },   // Sony (nameless)
+    { 0xDEAD, "BEEF"        },   // something fun I made up for testing
+    { 0xBEEF, "DEAD"        },   // something fun I made up for testing II
 };
 
 #define VENDOR_COUNT (sizeof(VENDORS) / sizeof(VENDORS[0]))

@@ -39,10 +39,10 @@ static const char *TAG = "splinter";
 
 // ---- tunables -------------------------------------------------------------
 #define SPLINTER_ROTATE_MS   250   // paced mode: delay between decoys (BENCHMARK=0)
-#define SPLINTER_NAME_PROB    60   // % chance a decoy advertises a device name
-#define SPLINTER_MFG_PROB     85   // % chance a decoy carries vendor mfg data
+#define SPLINTER_NAME_PROB    40   // % chance a decoy advertises a device name
+#define SPLINTER_MFG_PROB     90   // % chance a decoy carries vendor mfg data
 #define SPLINTER_ADV_MS      100   // on-air advertising interval per decoy (ms)
-#define SPLINTER_EXT_REFRESH_MS 20 // C5 ext-adv: gap between per-instance identity
+#define SPLINTER_EXT_REFRESH_MS 2000 // C5 ext-adv: gap between per-instance identity
                                    // refreshes. The instances advertise concurrently
                                    // on their own; this just paces the churn AND
                                    // yields the single core (host/USB/idle/WDT).
