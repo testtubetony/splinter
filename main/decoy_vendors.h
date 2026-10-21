@@ -38,6 +38,19 @@ static const vendor_t VENDORS[] = {
     { 0x0087, "vivosmart"   },   // Garmin (band)
     { 0x00E0, NULL          },   // Google (nameless)
     { 0x012D, NULL          },   // Sony (nameless)
+    { 0x0055, "Poly Voyager"},   // Plantronics (Poly)
+    { 0x0057, "JBL Flip"    },   // Harman International (JBL)
+    { 0x006B, "Polar H10"   },   // Polar Electro OY
+    { 0x00CC, "Powerbeats"  },   // Beats Electronics
+    { 0x0171, "Echo Buds"   },   // Amazon.com Services
+    { 0x01DA, "MX Anywhere" },   // Logitech International
+    { 0x027D, "FreeBuds"    },   // Huawei Technologies
+    { 0x038F, "Mi Band"     },   // Xiaomi
+    { 0x03FF, "ScanWatch"   },   // Withings
+    { 0x05A7, "Sonos Roam"  },   // Sonos
+    { 0x0055, NULL          },   // Plantronics (nameless)
+    { 0x038F, NULL          },   // Xiaomi (nameless)
+    { 0x05A7, NULL          },   // Sonos (nameless)
 };
 
 #define VENDOR_COUNT (sizeof(VENDORS) / sizeof(VENDORS[0]))
