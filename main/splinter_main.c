@@ -106,8 +106,6 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
         f->mfg_data_len = 2 + body;
     }
 
-    f->tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    f->tx_pwr_lvl_is_present = 1;
 }
 
 #ifdef CONFIG_BT_NIMBLE_EXT_ADV
@@ -143,6 +141,8 @@ static int configure_instance(uint8_t instance)
 static int refresh_instance(uint8_t instance)
 {
     int rc;
+    static int diag_budget = 8;   // only print details for the first 8 failures,
+                                   // so we don't flood the UART at 50 calls/sec
 
     ble_gap_ext_adv_stop(instance);      // ok if it wasn't running
 
@@ -152,7 +152,10 @@ static int refresh_instance(uint8_t instance)
     addr.type = BLE_ADDR_RANDOM;
     memcpy(addr.val, raw, sizeof(raw));
     rc = ble_gap_ext_adv_set_addr(instance, &addr);
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "set_addr inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
 
     struct ble_hs_adv_fields fields;
     uint8_t mfg[10];
@@ -161,14 +164,27 @@ static int refresh_instance(uint8_t instance)
     uint8_t buf[BLE_HS_ADV_MAX_SZ];
     uint8_t buf_len = 0;
     rc = ble_hs_adv_set_fields(&fields, buf, &buf_len, sizeof(buf));
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "adv_set_fields inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
 
     struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, buf_len);
-    if (om == NULL) return BLE_HS_ENOMEM;
+    if (om == NULL) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "mbuf_from_flat inst=%u ENOMEM", instance); diag_budget--; }
+        return BLE_HS_ENOMEM;
+    }
     rc = ble_gap_ext_adv_set_data(instance, om);   // consumes om
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "ext_adv_set_data inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
 
-    return ble_gap_ext_adv_start(instance, 0, 0);  // duration 0 = forever
+    rc = ble_gap_ext_adv_start(instance, 0, 0);  // duration 0 = forever
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "ext_adv_start inst=%u rc=%d", instance, rc); diag_budget--; }
+    }
+    return rc;
 }
 
 static void splinter_run(void)
