@@ -46,6 +46,14 @@ static const char *TAG = "splinter";
                                    // refreshes. The instances advertise concurrently
                                    // on their own; this just paces the churn AND
                                    // yields the single core (host/USB/idle/WDT).
+#define SPLINTER_REPEAT_MIN    4   // an identity (MAC+payload) stays on an
+#define SPLINTER_REPEAT_MAX    8   // instance for this many turns before being
+                                   // retired and replaced — makes a decoy look
+                                   // like a lingering device, At the default cadence
+                                   // (SPLINTER_INSTANCES * SPLINTER_EXT_REFRESH_MS
+                                   // per turn) this gives each identity enough
+                                   // time on air to transmit several real
+                                   // advertising packets (see SPLINTER_ADV_MS).
 
 // 1 = flood/benchmark (max rate, reports devices/sec). 0 = paced decoy.
 #define SPLINTER_BENCHMARK     1
@@ -117,6 +125,13 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
 #endif
 #define SPLINTER_INSTANCES   CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES
 
+// Per-instance "how many more turns does the current identity get before it's
+// retired and replaced" countdown. The identity itself (MAC + payload) isn't
+// stored here — once handed to the controller it keeps transmitting on its
+// own every advertising interval, so a 1-byte counter per instance is all we
+// need. C zero-initializes static arrays, so every instance starts at 0 and
+// is due for its first identity as soon as splinter_run() begins.
+static uint8_t s_repeats_left[SPLINTER_INSTANCES];
 // Configure one instance as a legacy-PDU, non-connectable advertiser so it is
 // visible to ordinary (legacy) scanners. Done once per instance at startup.
 static int configure_instance(uint8_t instance)
@@ -199,27 +214,42 @@ static void splinter_run(void)
              SPLINTER_INSTANCES);
 
     uint8_t inst = 0;
-    uint32_t t0 = esp_log_timestamp(), ok = 0, fail = 0;
+    uint32_t t0 = esp_log_timestamp(), minted = 0, held = 0, fail = 0;
     for (;;) {
-        if (refresh_instance(inst) == 0) {
-            ok++;
+        if (s_repeats_left[inst] == 0) {
+            // This instance's identity (if any) has served its repeats — mint
+            // a fresh one, same as the old unconditional-refresh behaviour.
+            if (refresh_instance(inst) == 0) {
+                minted++;
+                uint8_t span = SPLINTER_REPEAT_MIN +
+                    (uint8_t)(esp_random() % (SPLINTER_REPEAT_MAX - SPLINTER_REPEAT_MIN + 1));
+                s_repeats_left[inst] = span - 1;  // this turn was appearance #1
+            } else {
+                fail++;
+                // leave s_repeats_left[inst] at 0 so we retry on its next turn
+            }
         } else {
-            fail++;
+            // Identity keeps transmitting unchanged on its own; just count
+            // down the turns it has left before it's due for replacement.
+            s_repeats_left[inst]--;
+            held++;
         }
         inst = (inst + 1) % SPLINTER_INSTANCES;
 
         uint32_t now = esp_log_timestamp();
         if (now - t0 >= 1000) {
-            ESP_LOGW(TAG, "rate: %lu refreshes/sec, %d live instances (fail=%lu)",
-                     (unsigned long)ok, SPLINTER_INSTANCES, (unsigned long)fail);
-            ok = 0;
+            ESP_LOGW(TAG, "rate: %lu new/sec, %lu held/sec, %d live instances (fail=%lu)",
+                     (unsigned long)minted, (unsigned long)held, SPLINTER_INSTANCES,
+                     (unsigned long)fail);
+            minted = 0;
+            held = 0;
             fail = 0;
             t0 = now;
         }
 
         // Always yield: on the single-core C5 a tight loop starves the BLE host,
         // the USB-Serial-JTAG console, and the idle/watchdog tasks. The 4
-        // instances keep advertising concurrently between refreshes regardless.
+        // instances keep advertising concurrently between turns regardless.
         vTaskDelay(pdMS_TO_TICKS(SPLINTER_EXT_REFRESH_MS));
     }
 }
