@@ -123,6 +123,13 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
         f->mfg_data_len = 2 + body;
     }
 
+    // Self-reported TX Power Level: a fixed, product-calibrated value (never
+    // the real randomized radio power — see decoy_vendors.h for why). Always
+    // present, matching how a real product either always or never includes
+    // this field, rather than flickering it packet to packet.
+    f->tx_pwr_lvl = v->typical_tx_dbm;
+    f->tx_pwr_lvl_is_present = 1;
+
 }
 
 #ifdef CONFIG_BT_NIMBLE_EXT_ADV
