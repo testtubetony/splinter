@@ -47,13 +47,22 @@ static const char *TAG = "splinter";
                                    // on their own; this just paces the churn AND
                                    // yields the single core (host/USB/idle/WDT).
 #define SPLINTER_REPEAT_MIN    4   // an identity (MAC+payload) stays on an
-#define SPLINTER_REPEAT_MAX    8   // instance for this many turns before being
+#define SPLINTER_REPEAT_MAX   12   // instance for this many turns before being
                                    // retired and replaced — makes a decoy look
                                    // like a lingering device, At the default cadence
                                    // (SPLINTER_INSTANCES * SPLINTER_EXT_REFRESH_MS
                                    // per turn) this gives each identity enough
                                    // time on air to transmit several real
                                    // advertising packets (see SPLINTER_ADV_MS).
+#define SPLINTER_TX_POWER_MIN -20  // dBm range the radio actually transmits at,
+#define SPLINTER_TX_POWER_MAX   4  // randomized per identity. Real RF power, not
+                                   // a reported value — a scanner's RSSI genuinely
+                                   // comes out weaker for a low-power pick, making
+                                   // that decoy look farther away. -20..+4 dBm
+                                   // spans what small real peripherals (earbuds,
+                                   // trackers, sensors) typically use; the C5 can
+                                   // go up to +20 dBm but that reads as unusually
+                                   // strong for this class of device.
 
 // 1 = flood/benchmark (max rate, reports devices/sec). 0 = paced decoy.
 #define SPLINTER_BENCHMARK     1
@@ -134,7 +143,7 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
 static uint8_t s_repeats_left[SPLINTER_INSTANCES];
 // Configure one instance as a legacy-PDU, non-connectable advertiser so it is
 // visible to ordinary (legacy) scanners. Done once per instance at startup.
-static int configure_instance(uint8_t instance)
+static int configure_instance(uint8_t instance, int8_t tx_power)
 {
     struct ble_gap_ext_adv_params p;
     memset(&p, 0, sizeof(p));
@@ -147,7 +156,7 @@ static int configure_instance(uint8_t instance)
     p.sid           = instance;
     p.itvl_min      = ADV_ITVL_UNITS(SPLINTER_ADV_MS);
     p.itvl_max      = ADV_ITVL_UNITS(SPLINTER_ADV_MS + 30);
-    p.tx_power      = 127;               // controller clamps to its max
+    p.tx_power      = tx_power;
     return ble_gap_ext_adv_configure(instance, &p, NULL, NULL, NULL);
 }
 
@@ -160,6 +169,14 @@ static int refresh_instance(uint8_t instance)
                                    // so we don't flood the UART at 50 calls/sec
 
     ble_gap_ext_adv_stop(instance);      // ok if it wasn't running
+
+    int8_t power = (int8_t)(SPLINTER_TX_POWER_MIN +
+        (esp_random() % (SPLINTER_TX_POWER_MAX - SPLINTER_TX_POWER_MIN + 1)));
+    rc = configure_instance(instance, power);
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "configure inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
 
     uint8_t raw[6];
     make_random_static_addr(raw);
@@ -205,7 +222,7 @@ static int refresh_instance(uint8_t instance)
 static void splinter_run(void)
 {
     for (uint8_t i = 0; i < SPLINTER_INSTANCES; i++) {
-        int rc = configure_instance(i);
+        int rc = configure_instance(i, 127);
         if (rc != 0) {
             ESP_LOGW(TAG, "configure instance %u failed rc=%d", i, rc);
         }
