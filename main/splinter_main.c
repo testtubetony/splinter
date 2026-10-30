@@ -63,6 +63,18 @@ static const char *TAG = "splinter";
                                    // trackers, sensors) typically use; the C5 can
                                    // go up to +20 dBm but that reads as unusually
                                    // strong for this class of device.
+#define SPLINTER_TX_DRIFT_MAX           3  // dBm: max |Δpower| applied to a held
+                                            // identity's real radio power on each
+                                            // turn, relative to its own PREVIOUS
+                                            // turn's power (a random walk, not a
+                                            // fixed step) — simulates someone still
+                                            // walking nearer/farther while remaining
+                                            // "the same" decoy between mints.
+#define SPLINTER_TX_DRIFT_REVERSE_PCT  15  // % chance per held turn the drift
+                                            // direction flips instead of continuing
+                                            // — strongly favors one direction per
+                                            // identity (a "walk"), without ever
+                                            // fully forbidding it from doubling back.
 
 // 1 = flood/benchmark (max rate, reports devices/sec). 0 = paced decoy.
 #define SPLINTER_BENCHMARK     1
@@ -124,12 +136,12 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
     }
 
     // Self-reported TX Power Level: a fixed, product-calibrated value (never
-    // the real randomized radio power — see decoy_vendors.h for why). Always
-    // present, matching how a real product either always or never includes
-    // this field, rather than flickering it packet to packet.
-    f->tx_pwr_lvl = v->typical_tx_dbm;
-    f->tx_pwr_lvl_is_present = 1;
-
+    // the real randomized radio power — see decoy_vendors.h for why). A row
+    // set to -128 omits the field entirely for that row.
+    if (v->typical_tx_dbm != -128) {
+        f->tx_pwr_lvl = v->typical_tx_dbm;
+        f->tx_pwr_lvl_is_present = 1;
+    }
 }
 
 #ifdef CONFIG_BT_NIMBLE_EXT_ADV
@@ -148,6 +160,18 @@ static void build_decoy_fields(struct ble_hs_adv_fields *f, uint8_t *mfg)
 // need. C zero-initializes static arrays, so every instance starts at 0 and
 // is due for its first identity as soon as splinter_run() begins.
 static uint8_t s_repeats_left[SPLINTER_INSTANCES];
+
+// Per-instance drift state, plus a cache of the exact address/payload bytes
+// each instance is currently using. The cache exists so drift_instance() can
+// resend an identity's bytes byte-for-byte while only changing tx_power,
+// without relying on an unconfirmed assumption that reconfiguring an
+// instance's params alone leaves its previously-set address/data untouched.
+static int8_t  s_power[SPLINTER_INSTANCES];      // current real radio power (dBm)
+static int8_t  s_drift_dir[SPLINTER_INSTANCES];  // +1 or -1: current drift bias
+static uint8_t s_addr[SPLINTER_INSTANCES][6];
+static uint8_t s_payload[SPLINTER_INSTANCES][BLE_HS_ADV_MAX_SZ];
+static uint8_t s_payload_len[SPLINTER_INSTANCES];
+
 // Configure one instance as a legacy-PDU, non-connectable advertiser so it is
 // visible to ordinary (legacy) scanners. Done once per instance at startup.
 static int configure_instance(uint8_t instance, int8_t tx_power)
@@ -222,6 +246,72 @@ static int refresh_instance(uint8_t instance)
     rc = ble_gap_ext_adv_start(instance, 0, 0);  // duration 0 = forever
     if (rc != 0) {
         if (diag_budget > 0) { ESP_LOGE(TAG, "ext_adv_start inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
+
+    // Cache this identity so later drift turns can resend the identical
+    // address+payload while only changing tx_power (see drift_instance()).
+    memcpy(s_addr[instance], raw, sizeof(raw));
+    memcpy(s_payload[instance], buf, buf_len);
+    s_payload_len[instance] = buf_len;
+    s_power[instance] = power;
+    return 0;
+}
+
+// Nudge one instance's real transmit power by a small random step, biased to
+// continue the direction it was already drifting (but not locked to it) —
+// simulates someone continuing to walk nearer/farther while still reading as
+// "the same" decoy. Resends the cached address+payload byte-for-byte; only
+// tx_power actually changes.
+static int drift_instance(uint8_t instance)
+{
+    int rc;
+    static int diag_budget = 8;
+
+    if ((esp_random() % 100) < SPLINTER_TX_DRIFT_REVERSE_PCT) {
+        s_drift_dir[instance] = (int8_t)(-s_drift_dir[instance]);
+    }
+    int8_t step = (int8_t)(1 + (esp_random() % SPLINTER_TX_DRIFT_MAX));
+    int16_t next = (int16_t)s_power[instance] + (int16_t)(step * s_drift_dir[instance]);
+    if (next <= SPLINTER_TX_POWER_MIN) {
+        next = SPLINTER_TX_POWER_MIN;
+        s_drift_dir[instance] = 1;    // bounce back inward
+    } else if (next >= SPLINTER_TX_POWER_MAX) {
+        next = SPLINTER_TX_POWER_MAX;
+        s_drift_dir[instance] = -1;   // bounce back inward
+    }
+    s_power[instance] = (int8_t)next;
+
+    ble_gap_ext_adv_stop(instance);
+    rc = configure_instance(instance, s_power[instance]);
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "drift configure inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
+
+    ble_addr_t addr;
+    addr.type = BLE_ADDR_RANDOM;
+    memcpy(addr.val, s_addr[instance], sizeof(addr.val));
+    rc = ble_gap_ext_adv_set_addr(instance, &addr);
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "drift set_addr inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(s_payload[instance], s_payload_len[instance]);
+    if (om == NULL) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "drift mbuf_from_flat inst=%u ENOMEM", instance); diag_budget--; }
+        return BLE_HS_ENOMEM;
+    }
+    rc = ble_gap_ext_adv_set_data(instance, om);   // consumes om
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "drift set_data inst=%u rc=%d", instance, rc); diag_budget--; }
+        return rc;
+    }
+
+    rc = ble_gap_ext_adv_start(instance, 0, 0);
+    if (rc != 0) {
+        if (diag_budget > 0) { ESP_LOGE(TAG, "drift start inst=%u rc=%d", instance, rc); diag_budget--; }
     }
     return rc;
 }
@@ -248,13 +338,17 @@ static void splinter_run(void)
                 uint8_t span = SPLINTER_REPEAT_MIN +
                     (uint8_t)(esp_random() % (SPLINTER_REPEAT_MAX - SPLINTER_REPEAT_MIN + 1));
                 s_repeats_left[inst] = span - 1;  // this turn was appearance #1
+                s_drift_dir[inst] = (esp_random() % 2) ? 1 : -1;
             } else {
                 fail++;
                 // leave s_repeats_left[inst] at 0 so we retry on its next turn
             }
         } else {
-            // Identity keeps transmitting unchanged on its own; just count
-            // down the turns it has left before it's due for replacement.
+            // Same MAC/payload, but its real radio power takes one more step
+            // of its random walk — see drift_instance().
+            if (drift_instance(inst) != 0) {
+                fail++;
+            }
             s_repeats_left[inst]--;
             held++;
         }
