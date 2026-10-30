@@ -34,11 +34,21 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Sentinel for typical_tx_dbm: this vendor row has no "self-reported" TX Power
+// Level at all (the field is omitted from the payload for that row), not "a
+// device that claims 0 dBm" — many real devices skip this field entirely too.
+// C has no true null for a plain integer field, so instead of overloading a
+// real dBm value (0 is itself a legitimate power some devices actually use),
+// this picks a value that's simply impossible as a real one: the BLE spec's
+// valid TX-power range is -127..+20 dBm, so INT8_MIN (-128) can never collide
+// with anything a real device would report.
+
 typedef struct {
     uint16_t    company_id;      // Bluetooth SIG company identifier (little-endian on air)
     const char *name;            // <= 12 chars to stay within the 31-byte adv budget; NULL = no name
     int8_t      typical_tx_dbm;  // fixed "calibrated" TX Power Level this product class
-                                  // self-reports (-127..+20 dBm per the BLE spec)
+                                  // self-reports (-127..+20 dBm per the BLE spec), or
+                                  // -128 to omit the field for this row.
 } vendor_t;
 
 static const vendor_t VENDORS[] = {
@@ -47,7 +57,7 @@ static const vendor_t VENDORS[] = {
     { 0x009E, "Bose QC",     -2  },  // Bose Corporation (ANC earbuds)
     { 0x0087, "Garmin",      -8  },  // Garmin International (GPS wearable)
     { 0x012D, "WF-1000XM5",  -4  },  // Sony Corporation (earbuds)
-    { 0x0059, NULL,         -20  },  // Nordic Semiconductor (nameless sensor)
+    { 0x0059, NULL,        -128  },  // Nordic Semiconductor (nameless sensor, no TX power field)
     { 0x0075, NULL,         -16  },  // Samsung (nameless wearable)
     { 0x0087, "vivosmart",  -12  },  // Garmin (fitness band)
     { 0x00E0, NULL,         -18  },  // Google (nameless)
